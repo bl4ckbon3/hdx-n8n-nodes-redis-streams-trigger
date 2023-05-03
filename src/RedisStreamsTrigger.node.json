@@ -1,0 +1,6 @@
+{
+	"node": "n8n-nodes-hdx.redisStreamsTrigger",
+	"nodeVersion": "0.1.0",
+	"codexVersion": "0.1.0",
+	"categories": ["Communication", "Development", "Data & Storage"]
+}

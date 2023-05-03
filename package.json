@@ -1,0 +1,22 @@
+{
+  "name": "hdx-n8n-nodes-redis-streams-trigger",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "tsc"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "n8n-core": "^0.161.0",
+    "n8n-workflow": "^0.143.0",
+    "redis": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^18.16.1",
+    "typescript": "^5.0.4"
+  }
+}

@@ -6,6 +6,8 @@ describe('Redis', () => {
   beforeAll(() => {
     const host = process.env.REDIS_HOST;
     const db = process.env.REDIS_DB || '7';
+
+    console.log(`Redis host is ${host}`);
     
     client = createClient({
       socket: {

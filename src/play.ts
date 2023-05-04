@@ -3,7 +3,7 @@ console.log('Starting standalone test program');
 
 const f = async () => {
     try {
-        const redis_connection = new RedisConnectionHelper('manual', 'redis', 6379, 7, 'stream_name', 'group_name', 'consumer_name')
+        const redis_connection = new RedisConnectionHelper('manual', 'gisredis', 6379, 7, 'hdx_event_stream', 'default_group22', 'ts_consumer')
         await redis_connection.listenForEvents((messages) => {
             console.log('In handler');
             console.log('Message: ' + JSON.stringify(messages));

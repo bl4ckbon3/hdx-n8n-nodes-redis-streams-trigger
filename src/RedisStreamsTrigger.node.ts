@@ -8,7 +8,7 @@ import {createClient, RedisClientType} from 'redis';
 
 export class RedisStreamsTrigger implements INodeType {
   description: INodeTypeDescription = {
-    displayName: 'Redis Streams Trigger 3',
+    displayName: 'Redis Streams Trigger',
     name: 'redisStreamsTrigger',
     group: ['trigger'],
     version: 1,

@@ -145,17 +145,16 @@ export class RedisConnectionHelper {
       database: this.db as number,
     });
     this.client.on('error', (err) => console.log('Redis Client Error', err));
-    this.connected = false;
     this.mode = mode;
-
+    this.connected = false;
   };
 
   async listenForEvents(handler: (messages: any) => void) {
-    if (!this.connected) {
-      await this.client.connect();
-      this.connected = true;
-    }
+    await this.ensureConnection();
+    await this.createConsumerGroup();
     
+
+
     const readStream = async () => {
       
         while (this.client.isOpen) {
@@ -181,9 +180,37 @@ export class RedisConnectionHelper {
     // this.client.quit();
   }
 
+  private async createConsumerGroup() {
+    await this.ensureConnection();
+    try {
+      await this.client.xGroupCreate(this.streamName, this.groupName, '0');
+    } catch (error: any) {
+      let msg: string = error.message;
+      if (msg.includes('BUSYGROUP')) {
+        console.log(`The consumer group ${this.groupName} already exists so it couldn't be created.`);
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  async ensureConnection() {
+    if (!this.connected) {
+      await this.client.connect();
+      this.connected = true;
+    }
+  }
+
+  async pushEvent(event: any) {
+    await this.ensureConnection();
+    await this.client.xAdd(this.streamName, '*', event);
+  }
+
   closeClient() {
-    console.log('Closing client');
-    return this.client.quit();
+    if (this.client.isOpen) {
+      console.log('Closing client');
+      return this.client.quit();
+    }
   }
 
 }

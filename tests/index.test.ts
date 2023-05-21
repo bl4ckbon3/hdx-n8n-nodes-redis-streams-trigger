@@ -6,7 +6,7 @@ describe('Redis', () => {
   let helper: RedisConnectionHelper;
 
   beforeAll(() => {
-    host = process.env.REDIS_HOST || 'redis';
+    host = process.env.REDIS_HOST || 'gisredis';
     db = process.env.REDIS_DB || '7';
 
     console.log(`Redis host is ${host}`);
@@ -59,5 +59,41 @@ describe('Redis', () => {
 
     expect(value1).toBe('value1');
     expect(value2).toBe('value2');
+  });
+
+  test('Read events in batches', async () => {
+    expect.assertions(2);
+
+    const BATCH_SIZE = 8;
+    const EVENTS_NUM = 10;
+    expect.assertions(2);
+    helper = new RedisConnectionHelper('trigger', host, 6379, 7, 'some_test_stream', 'some_consumer_group', 'some_consumer', undefined, BATCH_SIZE);
+    for (let i=0; i<EVENTS_NUM; i++) {
+      await helper.pushEvent({ 'field1': 'value1_' + i, 'field2': 'value2_' + i });
+    }
+    console.log('After pushing all events');
+
+    let value1: string = 'some value';
+    let value2: string = 'some value';
+
+    let counter = 0;
+
+    try {
+      await helper.listenForEvents((messages) => {
+        counter++;
+        if (counter === 1) {
+          expect(messages.length).toBe(BATCH_SIZE);
+        }
+        else if (counter === 2) {
+          expect(messages.length).toBe(BATCH_SIZE);
+        }
+        else {
+          throw new Error('The callback function should only be called twice');
+        }
+      });
+    } catch (error: any) {
+      console.log('Error ' + error.message);
+    }
+
   });
 });

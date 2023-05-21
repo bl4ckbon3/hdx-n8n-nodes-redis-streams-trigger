@@ -56,6 +56,22 @@ class RedisStreamsTrigger {
                     required: true,
                     description: 'This identifies the consumer inside the group',
                 },
+                {
+                    displayName: 'Options',
+                    name: 'options',
+                    type: 'collection',
+                    placeholder: 'Add Option',
+                    default: {},
+                    options: [
+                        {
+                            displayName: 'Batch',
+                            name: 'batchSize',
+                            type: 'number',
+                            default: 0,
+                            description: 'The maximum number of events to read from the redis stream at one time',
+                        },
+                    ],
+                },
             ],
         };
     }
@@ -72,7 +88,9 @@ class RedisStreamsTrigger {
             const streamName = this.getNodeParameter('streamName');
             const groupName = this.getNodeParameter('groupName');
             const consumerName = this.getNodeParameter('consumerName');
-            const redisHelper = new RedisConnectionHelper(this.getMode(), host, port, db, streamName, groupName, consumerName, password);
+            const options = this.getNodeParameter('options');
+            const batchSize = options.batchSize;
+            const redisHelper = new RedisConnectionHelper(this.getMode(), host, port, db, streamName, groupName, consumerName, password, batchSize);
             console.log('Started my workflow in mode: ' + this.getMode());
             const emitMessage = (m) => { this.emit([this.helpers.returnJsonArray(m)]); };
             const manualTriggerFunction = () => __awaiter(this, void 0, void 0, function* () {
@@ -103,7 +121,7 @@ class RedisStreamsTrigger {
 }
 exports.RedisStreamsTrigger = RedisStreamsTrigger;
 class RedisConnectionHelper {
-    constructor(mode, host, port, db, streamName, groupName, consumerName, password) {
+    constructor(mode, host, port, db, streamName, groupName, consumerName, password, batchSize) {
         this.block = 30 * 1000; // ms to wait to read events from the stream
         this.host = host;
         this.port = port;
@@ -123,20 +141,23 @@ class RedisConnectionHelper {
             database: this.db,
         });
         this.client.on('error', (err) => console.log('Redis Client Error', err));
-        this.connected = false;
         this.mode = mode;
+        this.connected = false;
+        this.batchSize = batchSize;
     }
     ;
     listenForEvents(handler) {
         return __awaiter(this, void 0, void 0, function* () {
-            if (!this.connected) {
-                yield this.client.connect();
-                this.connected = true;
-            }
+            yield this.ensureConnection();
+            yield this.createConsumerGroup();
             const readStream = () => __awaiter(this, void 0, void 0, function* () {
+                const groupOptions = {
+                    BLOCK: this.block,
+                    COUNT: this.batchSize ? this.batchSize : undefined
+                };
                 while (this.client.isOpen) {
                     console.log('Awaiting message');
-                    const messages = yield this.client.xReadGroup(this.groupName, this.consumerName, { key: this.streamName, id: '>' }, { BLOCK: this.block });
+                    const messages = yield this.client.xReadGroup(this.groupName, this.consumerName, { key: this.streamName, id: '>' }, groupOptions);
                     console.log('After message');
                     if (messages) {
                         const messageBodies = messages.map(streamMsg => streamMsg.messages).flat().map(m => m.message);
@@ -156,9 +177,42 @@ class RedisConnectionHelper {
             // this.client.quit();
         });
     }
+    createConsumerGroup() {
+        return __awaiter(this, void 0, void 0, function* () {
+            yield this.ensureConnection();
+            try {
+                yield this.client.xGroupCreate(this.streamName, this.groupName, '0');
+            }
+            catch (error) {
+                let msg = error.message;
+                if (msg.includes('BUSYGROUP')) {
+                    console.log(`The consumer group ${this.groupName} already exists so it couldn't be created.`);
+                }
+                else {
+                    throw error;
+                }
+            }
+        });
+    }
+    ensureConnection() {
+        return __awaiter(this, void 0, void 0, function* () {
+            if (!this.connected) {
+                yield this.client.connect();
+                this.connected = true;
+            }
+        });
+    }
+    pushEvent(event) {
+        return __awaiter(this, void 0, void 0, function* () {
+            yield this.ensureConnection();
+            yield this.client.xAdd(this.streamName, '*', event);
+        });
+    }
     closeClient() {
-        console.log('Closing client');
-        return this.client.quit();
+        if (this.client.isOpen) {
+            console.log('Closing client');
+            return this.client.quit();
+        }
     }
 }
 exports.RedisConnectionHelper = RedisConnectionHelper;

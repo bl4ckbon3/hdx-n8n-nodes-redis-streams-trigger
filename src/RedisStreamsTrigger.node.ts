@@ -3,6 +3,7 @@ import {
   ITriggerResponse,
   INodeType,
   INodeTypeDescription,
+  IDataObject,
 } from 'n8n-workflow';
 import {createClient, RedisClientType} from 'redis';
 
@@ -53,6 +54,22 @@ export class RedisStreamsTrigger implements INodeType {
 				description:
 					'This identifies the consumer inside the group',
 			},
+      {
+				displayName: 'Options',
+				name: 'options',
+				type: 'collection',
+				placeholder: 'Add Option',
+				default: {},
+				options: [
+					{
+						displayName: 'Batch',
+						name: 'batchSize',
+						type: 'number',
+						default: 0,
+						description: 'The maximum number of events to read from the redis stream at one time',
+					},
+				],
+			},
     ],
   };
 
@@ -73,7 +90,11 @@ export class RedisStreamsTrigger implements INodeType {
     const groupName = this.getNodeParameter('groupName') as string;
     const consumerName = this.getNodeParameter('consumerName') as string;
 
-    const redisHelper = new RedisConnectionHelper(this.getMode(), host, port, db, streamName, groupName, consumerName, password);
+    const options = this.getNodeParameter('options') as IDataObject;
+
+    const batchSize = options.batchSize as number;
+
+    const redisHelper = new RedisConnectionHelper(this.getMode(), host, port, db, streamName, groupName, consumerName, password, batchSize);
     
 
     console.log('Started my workflow in mode: ' + this.getMode());
@@ -126,7 +147,9 @@ export class RedisConnectionHelper {
   client: RedisClientType;
   connected: boolean;
   block = 30 * 1000; // ms to wait to read events from the stream
-  constructor(mode:string, host: string, port: number, db: number, streamName: string, groupName: string, consumerName: string, password?: string) {
+  batchSize?: number;
+
+  constructor(mode:string, host: string, port: number, db: number, streamName: string, groupName: string, consumerName: string, password?: string, batchSize?: number) {
     this.host = host;
     this.port = port;
     this.db = db;
@@ -145,22 +168,28 @@ export class RedisConnectionHelper {
       database: this.db as number,
     });
     this.client.on('error', (err) => console.log('Redis Client Error', err));
-    this.connected = false;
     this.mode = mode;
+    this.connected = false;
 
+    this.batchSize = batchSize;
   };
 
   async listenForEvents(handler: (messages: any) => void) {
-    if (!this.connected) {
-      await this.client.connect();
-      this.connected = true;
-    }
+    await this.ensureConnection();
+    await this.createConsumerGroup();
     
+
+
     const readStream = async () => {
-      
+
+        const groupOptions = {
+          BLOCK: this.block,
+          COUNT: this.batchSize ? this.batchSize : undefined
+        };
+
         while (this.client.isOpen) {
           console.log('Awaiting message');
-          const messages = await this.client.xReadGroup(this.groupName, this.consumerName, {key: this.streamName, id: '>'}, {BLOCK: this.block});
+          const messages = await this.client.xReadGroup(this.groupName, this.consumerName, {key: this.streamName, id: '>'}, groupOptions);
           console.log('After message');
           if (messages) {
             const messageBodies = messages.map(streamMsg => streamMsg.messages).flat().map(m => m.message);
@@ -181,9 +210,37 @@ export class RedisConnectionHelper {
     // this.client.quit();
   }
 
+  private async createConsumerGroup() {
+    await this.ensureConnection();
+    try {
+      await this.client.xGroupCreate(this.streamName, this.groupName, '0');
+    } catch (error: any) {
+      let msg: string = error.message;
+      if (msg.includes('BUSYGROUP')) {
+        console.log(`The consumer group ${this.groupName} already exists so it couldn't be created.`);
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  async ensureConnection() {
+    if (!this.connected) {
+      await this.client.connect();
+      this.connected = true;
+    }
+  }
+
+  async pushEvent(event: any) {
+    await this.ensureConnection();
+    await this.client.xAdd(this.streamName, '*', event);
+  }
+
   closeClient() {
-    console.log('Closing client');
-    return this.client.quit();
+    if (this.client.isOpen) {
+      console.log('Closing client');
+      return this.client.quit();
+    }
   }
 
 }

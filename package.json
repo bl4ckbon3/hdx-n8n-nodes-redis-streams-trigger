@@ -1,6 +1,6 @@
 {
   "name": "hdx-n8n-nodes-redis-streams-trigger",
-  "version": "1.0.0",
+  "version": "0.1.2",
   "description": "",
   "main": "index.js",
   "scripts": {

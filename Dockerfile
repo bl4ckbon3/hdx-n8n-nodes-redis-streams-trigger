@@ -1,4 +1,4 @@
-FROM n8nio/n8n:0.237.0
+FROM n8nio/n8n:1.15.2
 
 ENV N8N_CUSTOM_EXTENSIONS=/custom
 
@@ -10,4 +10,4 @@ USER node:node
 
 RUN cd /custom && npm install OCHA-DAP/hdx-n8n-nodes-redis-streams-trigger
 
-USER root
+# USER root

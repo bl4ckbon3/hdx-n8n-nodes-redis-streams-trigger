@@ -24,6 +24,7 @@ jobs:
         docker_registry_url: public.ecr.aws
         docker_registry_path: /unocha/
         docker_image: hdx-n8n
+        docker_file: Dockerfile
         docker_username: ${{ secrets.ECR_AWS_ACCESS_KEY_ID }}
         docker_password: ${{ secrets.ECR_AWS_SECRET_ACCESS_KEY }}
         ecr_github_token: ${{ secrets.ECR_GITHUB_TOKEN }}

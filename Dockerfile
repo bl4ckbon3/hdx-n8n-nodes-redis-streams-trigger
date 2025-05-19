@@ -1,4 +1,4 @@
-FROM n8nio/n8n:1.31.2
+FROM n8nio/n8n:1.92.2
 
 ARG BUILD_DATE
 ARG VCS_REF

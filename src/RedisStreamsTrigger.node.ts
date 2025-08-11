@@ -1,247 +1,168 @@
 import {
-  ITriggerFunctions,
-  ITriggerResponse,
-  INodeType,
-  INodeTypeDescription,
-  IDataObject,
+    INodeType,
+    INodeTypeDescription,
+    ITriggerFunctions,
+    ITriggerResponse,
+    NodeApiError,
+    NodeConnectionType
 } from 'n8n-workflow';
-import {createClient, RedisClientType} from 'redis';
+
+import { createClient } from 'redis';
+
+type RedisClient = ReturnType<typeof createClient>;
 
 export class RedisStreamsTrigger implements INodeType {
-  description: INodeTypeDescription = {
-    displayName: 'Redis Streams Trigger',
-    name: 'redisStreamsTrigger',
-    group: ['trigger'],
-    version: 1,
-    description: 'Triggers a workflow when a new message is added to a Redis stream',
-    defaults: {
-      name: 'Redis Streams Trigger',
-      color: '#772244',
-    },
-    inputs: [],
-    outputs: ['main'],
-    credentials: [
-      {
-				name: 'redis',
-				required: true,
-			},
-    ],
-    properties: [
-      {
-				displayName: 'Stream name',
-				name: 'streamName',
-				type: 'string',
-				default: '',
-				required: true, 
-				description:
-					'The name of the redis stream to listen to',
-			},
-      {
-				displayName: 'Group name',
-				name: 'groupName',
-				type: 'string',
-				default: '',
-				required: true, 
-				description:
-					'The name of the redis stream consumer group to use',
-			},
-      {
-				displayName: 'Consumer name',
-				name: 'consumerName',
-				type: 'string',
-				default: '',
-				required: true, 
-				description:
-					'This identifies the consumer inside the group',
-			},
-      {
-				displayName: 'Options',
-				name: 'options',
-				type: 'collection',
-				placeholder: 'Add Option',
-				default: {},
-				options: [
-					{
-						displayName: 'Batch',
-						name: 'batchSize',
-						type: 'number',
-						default: 0,
-						description: 'The maximum number of events to read from the redis stream at one time',
-					},
-				],
-			},
-    ],
-  };
+    description: INodeTypeDescription = {
+        displayName: 'Redis Streams Trigger',
+        name: 'redisStreamsTrigger',
+        icon: 'file:redis.svg',
+        group: ['trigger'],
+        version: 1,
+        description: 'Triggers a workflow when a new message arrives on a Redis Stream.',
+        defaults: {
+            name: 'Redis Streams Trigger',
+        },
+        inputs: [],
+        outputs: [NodeConnectionType.Main],
+        credentials: [
+            {
+                name: 'redis',
+                required: true,
+            },
+        ],
+        properties: [
+            {
+                displayName: 'Stream',
+                name: 'stream',
+                type: 'string',
+                required: true,
+                default: '',
+                description: 'The name of the stream to listen to.',
+            },
+            {
+                displayName: 'Consumer Group',
+                name: 'consumerGroup',
+                type: 'string',
+                required: true,
+                default: 'n8n-group',
+                description: 'The name of the consumer group. It will be created if it does not exist.',
+            },
+            {
+                displayName: 'Consumer Name',
+                name: 'consumerName',
+                type: 'string',
+                required: true,
+                default: 'n8n-consumer',
+                description: 'A unique name for this consumer within the group.',
+            },
+            {
+                displayName: 'Read From',
+                name: 'readFrom',
+                type: 'options',
+                required: true,
+                default: '$',
+                description: 'Option when should redis stream read the message.',
+                options: [
+                    {
+                        name: 'Beginning',
+                        value: '0',
+                    },
+                    {
+                        name: 'Consumer Group Created',
+                        value: '$',
+                    },
+                ],
+            },
+            {
+                displayName: 'Count',
+                name: 'count',
+                type: 'number',
+                default: 1,
+                description: 'The maximum number of messages to fetch per batch.',
+            },
+        ],
+    };
 
-  async trigger(this: ITriggerFunctions): Promise<ITriggerResponse> {
+    async trigger(this: ITriggerFunctions): Promise<ITriggerResponse> {
+        const credentials = await this.getCredentials('redis');
+        const stream = this.getNodeParameter('stream') as string;
+        const consumerGroup = this.getNodeParameter('consumerGroup') as string;
+        const consumerName = this.getNodeParameter('consumerName') as string;
+        const count = this.getNodeParameter('count') as number;
+        const readFrom = this.getNodeParameter('readFrom') as string;
 
-    const credentials = await this.getCredentials('redis');
+        const client: RedisClient = createClient({
+            url: `redis://${credentials.user}:${credentials.password}@${credentials.host}:${credentials.port}`,
+        });
 
-		const	host = credentials.host as string;
-		const	port = credentials.port as number;
-		const db = credentials.database as number;
+        let keepRunning = true;
 
-    let password = undefined;
-		if (credentials.password) {
-			password = credentials.password as string;
-		}
+        client.on('error', (err) => {
+            console.error('Redis Client Error', err);
+            keepRunning = false;
+        });
 
-    const streamName = this.getNodeParameter('streamName') as string;
-    const groupName = this.getNodeParameter('groupName') as string;
-    const consumerName = this.getNodeParameter('consumerName') as string;
+        await client.connect();
 
-    const options = this.getNodeParameter('options') as IDataObject;
+        try {
+            await client.xGroupCreate(stream, consumerGroup, readFrom, { MKSTREAM: true });
+            console.log(`Consumer group '${consumerGroup}' created or already exists.`);
+        } catch (error: any) {
+            if (error.message.includes('BUSYGROUP')) {
+                console.log(`Consumer group '${consumerGroup}' already exists.`);
+            } else {
+                await client.quit();
+                throw new NodeApiError(this.getNode(), error);
+            }
+        }
 
-    const batchSize = options.batchSize as number;
+        const manualTrigger = async () => {
+            while (keepRunning) {
+                try {
+                    const response = await client.xReadGroup(
+                        consumerGroup,
+                        consumerName,
+                        { key: stream, id: '>' },
+                        { COUNT: count, BLOCK: 5000 },
+                    );
 
-    const redisHelper = new RedisConnectionHelper(this.getMode(), host, port, db, streamName, groupName, consumerName, password, batchSize);
-    
+                    if (response && response.length > 0) {
+                        const returnData = response[0].messages.map((msg) => ({
+                            id: msg.id,
+                            message: msg.message,
+                        }));
 
-    console.log('Started my workflow in mode: ' + this.getMode());
-    const emitMessage = (m: any) => {this.emit([this.helpers.returnJsonArray(m)])};
-    const manualTriggerFunction = async () => {
-      console.log('Started my trigger function in mode: ' + this.getMode());
-      // await new Promise(resolve => {
-      //   for (let i = 0; i < 3; i++) {
-      //     setTimeout(() => {
-      //       this.emit([this.helpers.returnJsonArray({ 'key': 'This is a test ! ' + new Date().toISOString() })])
-      //     }, 3000);
-      //     resolve(true);
-      //   }
-      // });
-      await redisHelper.listenForEvents(emitMessage);
+                        this.emit([this.helpers.returnJsonArray(returnData)]);
 
-      // resolve(true);
-      return;
-    }
-    if (this.getMode() === 'trigger') {
-      manualTriggerFunction();
-		}
-    async function closeFunction() {
-			redisHelper.closeClient();
-		}
-    return {closeFunction, manualTriggerFunction};
-  }
-}
+                        const messageIds = returnData.map((msg) => msg.id);
+                        await client.xAck(stream, consumerGroup, messageIds);
+                    }
+                } catch (error: any) {
+                    if (!keepRunning) {
+                        break;
+                    }
+                    console.error('Error reading from Redis Stream:', error);
+                    await new Promise(resolve => setTimeout(resolve, 5000));
+                }
+            }
 
-interface MessageResponse {
-  name: string;
-  messages: {
-      id: string;
-      message: {
-          [x: string]: string;
-      };
-  }[];
-}
-
-export class RedisConnectionHelper {
-
-  mode: string;
-  host: string;
-  port: number;
-  db: number;
-  password?: string;
-  streamName: string;
-  groupName: string;
-  consumerName: string;
-  client: RedisClientType;
-  connected: boolean;
-  block = 30 * 1000; // ms to wait to read events from the stream
-  batchSize?: number;
-
-  constructor(mode:string, host: string, port: number, db: number, streamName: string, groupName: string, consumerName: string, password?: string, batchSize?: number) {
-    this.host = host;
-    this.port = port;
-    this.db = db;
-    if (this.password) {
-      this.password = password;
-    }
-    this.streamName = streamName;
-    this.groupName = groupName;
-    this.consumerName = consumerName;
-    this.client = createClient({
-      socket: {
-        host: this.host as string,
-        port: this.port as number,
-      },
-      password: this.password as string,
-      database: this.db as number,
-    });
-    this.client.on('error', (err) => console.log('Redis Client Error', err));
-    this.mode = mode;
-    this.connected = false;
-
-    this.batchSize = batchSize;
-  };
-
-  async listenForEvents(handler: (messages: any) => void) {
-    await this.ensureConnection();
-    await this.createConsumerGroup();
-    
-
-
-    const readStream = async () => {
-
-        const groupOptions = {
-          BLOCK: this.block,
-          COUNT: this.batchSize ? this.batchSize : undefined
+            if (client.isOpen) {
+                await client.quit();
+            }
         };
 
-        while (this.client.isOpen) {
-          console.log('Awaiting message');
-          const messages = await this.client.xReadGroup(this.groupName, this.consumerName, {key: this.streamName, id: '>'}, groupOptions);
-          console.log('After message');
-          if (messages) {
-            const messageBodies = messages.map(streamMsg => streamMsg.messages).flat().map(m => m.message);
-            handler(messageBodies);
-          } else {
-            console.log('Messages read from redis stream were null');
-          }
-          if (this.mode === 'manual') {
-            await this.closeClient();
-          }
+        const close = async () => {
+            console.log('Stopping Redis trigger and closing connection.');
+            keepRunning = false;
+            if (client.isOpen) {
+                await client.disconnect();
+            }
+        };
 
-        }
-      
-    };
-    console.log('Awaiting read stream');
-    await readStream();
-    console.log('After read stream');
-    // this.client.quit();
-  }
+        manualTrigger();
 
-  private async createConsumerGroup() {
-    await this.ensureConnection();
-    try {
-      await this.client.xGroupCreate(this.streamName, this.groupName, '0');
-    } catch (error: any) {
-      let msg: string = error.message;
-      if (msg.includes('BUSYGROUP')) {
-        console.log(`The consumer group ${this.groupName} already exists so it couldn't be created.`);
-      } else {
-        throw error;
-      }
+        return {
+            closeFunction: close,
+        };
     }
-  }
-
-  async ensureConnection() {
-    if (!this.connected) {
-      await this.client.connect();
-      this.connected = true;
-    }
-  }
-
-  async pushEvent(event: any) {
-    await this.ensureConnection();
-    await this.client.xAdd(this.streamName, '*', event);
-  }
-
-  closeClient() {
-    if (this.client.isOpen) {
-      console.log('Closing client');
-      return this.client.quit();
-    }
-  }
-
 }
-

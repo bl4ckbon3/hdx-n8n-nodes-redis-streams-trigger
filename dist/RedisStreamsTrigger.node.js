@@ -9,22 +9,23 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RedisConnectionHelper = exports.RedisStreamsTrigger = void 0;
+exports.RedisStreamsTrigger = void 0;
+const n8n_workflow_1 = require("n8n-workflow");
 const redis_1 = require("redis");
 class RedisStreamsTrigger {
     constructor() {
         this.description = {
             displayName: 'Redis Streams Trigger',
             name: 'redisStreamsTrigger',
+            icon: 'file:redis.svg',
             group: ['trigger'],
             version: 1,
-            description: 'Triggers a workflow when a new message is added to a Redis stream',
+            description: 'Triggers a workflow when a new message arrives on a Redis Stream.',
             defaults: {
                 name: 'Redis Streams Trigger',
-                color: '#772244',
             },
             inputs: [],
-            outputs: ['main'],
+            outputs: ["main" /* NodeConnectionType.Main */],
             credentials: [
                 {
                     name: 'redis',
@@ -33,44 +34,53 @@ class RedisStreamsTrigger {
             ],
             properties: [
                 {
-                    displayName: 'Stream name',
-                    name: 'streamName',
+                    displayName: 'Stream',
+                    name: 'stream',
                     type: 'string',
-                    default: '',
                     required: true,
-                    description: 'The name of the redis stream to listen to',
+                    default: '',
+                    description: 'The name of the stream to listen to.',
                 },
                 {
-                    displayName: 'Group name',
-                    name: 'groupName',
+                    displayName: 'Consumer Group',
+                    name: 'consumerGroup',
                     type: 'string',
-                    default: '',
                     required: true,
-                    description: 'The name of the redis stream consumer group to use',
+                    default: 'n8n-group',
+                    description: 'The name of the consumer group. It will be created if it does not exist.',
                 },
                 {
-                    displayName: 'Consumer name',
+                    displayName: 'Consumer Name',
                     name: 'consumerName',
                     type: 'string',
-                    default: '',
                     required: true,
-                    description: 'This identifies the consumer inside the group',
+                    default: 'n8n-consumer',
+                    description: 'A unique name for this consumer within the group.',
                 },
                 {
-                    displayName: 'Options',
-                    name: 'options',
-                    type: 'collection',
-                    placeholder: 'Add Option',
-                    default: {},
+                    displayName: 'Read From',
+                    name: 'readFrom',
+                    type: 'options',
+                    required: true,
+                    default: '$',
+                    description: 'Option when should redis stream read the message.',
                     options: [
                         {
-                            displayName: 'Batch',
-                            name: 'batchSize',
-                            type: 'number',
-                            default: 0,
-                            description: 'The maximum number of events to read from the redis stream at one time',
+                            name: 'Beginning',
+                            value: '0',
+                        },
+                        {
+                            name: 'Consumer Group Created',
+                            value: '$',
                         },
                     ],
+                },
+                {
+                    displayName: 'Count',
+                    name: 'count',
+                    type: 'number',
+                    default: 1,
+                    description: 'The maximum number of messages to fetch per batch.',
                 },
             ],
         };
@@ -78,142 +88,72 @@ class RedisStreamsTrigger {
     trigger() {
         return __awaiter(this, void 0, void 0, function* () {
             const credentials = yield this.getCredentials('redis');
-            const host = credentials.host;
-            const port = credentials.port;
-            const db = credentials.database;
-            let password = undefined;
-            if (credentials.password) {
-                password = credentials.password;
-            }
-            const streamName = this.getNodeParameter('streamName');
-            const groupName = this.getNodeParameter('groupName');
+            const stream = this.getNodeParameter('stream');
+            const consumerGroup = this.getNodeParameter('consumerGroup');
             const consumerName = this.getNodeParameter('consumerName');
-            const options = this.getNodeParameter('options');
-            const batchSize = options.batchSize;
-            const redisHelper = new RedisConnectionHelper(this.getMode(), host, port, db, streamName, groupName, consumerName, password, batchSize);
-            console.log('Started my workflow in mode: ' + this.getMode());
-            const emitMessage = (m) => { this.emit([this.helpers.returnJsonArray(m)]); };
-            const manualTriggerFunction = () => __awaiter(this, void 0, void 0, function* () {
-                console.log('Started my trigger function in mode: ' + this.getMode());
-                // await new Promise(resolve => {
-                //   for (let i = 0; i < 3; i++) {
-                //     setTimeout(() => {
-                //       this.emit([this.helpers.returnJsonArray({ 'key': 'This is a test ! ' + new Date().toISOString() })])
-                //     }, 3000);
-                //     resolve(true);
-                //   }
-                // });
-                yield redisHelper.listenForEvents(emitMessage);
-                // resolve(true);
-                return;
+            const count = this.getNodeParameter('count');
+            const readFrom = this.getNodeParameter('readFrom');
+            const client = (0, redis_1.createClient)({
+                url: `redis://${credentials.user}:${credentials.password}@${credentials.host}:${credentials.port}`,
             });
-            if (this.getMode() === 'trigger') {
-                manualTriggerFunction();
+            let keepRunning = true;
+            client.on('error', (err) => {
+                console.error('Redis Client Error', err);
+                keepRunning = false;
+            });
+            yield client.connect();
+            try {
+                yield client.xGroupCreate(stream, consumerGroup, readFrom, { MKSTREAM: true });
+                console.log(`Consumer group '${consumerGroup}' created or already exists.`);
             }
-            function closeFunction() {
-                return __awaiter(this, void 0, void 0, function* () {
-                    redisHelper.closeClient();
-                });
+            catch (error) {
+                if (error.message.includes('BUSYGROUP')) {
+                    console.log(`Consumer group '${consumerGroup}' already exists.`);
+                }
+                else {
+                    yield client.quit();
+                    throw new n8n_workflow_1.NodeApiError(this.getNode(), error);
+                }
             }
-            return { closeFunction, manualTriggerFunction };
+            const manualTrigger = () => __awaiter(this, void 0, void 0, function* () {
+                while (keepRunning) {
+                    try {
+                        const response = yield client.xReadGroup(consumerGroup, consumerName, { key: stream, id: '>' }, { COUNT: count, BLOCK: 5000 });
+                        if (response && response.length > 0) {
+                            const returnData = response[0].messages.map((msg) => ({
+                                id: msg.id,
+                                message: msg.message,
+                            }));
+                            this.emit([this.helpers.returnJsonArray(returnData)]);
+                            const messageIds = returnData.map((msg) => msg.id);
+                            yield client.xAck(stream, consumerGroup, messageIds);
+                        }
+                    }
+                    catch (error) {
+                        if (!keepRunning) {
+                            break;
+                        }
+                        console.error('Error reading from Redis Stream:', error);
+                        yield new Promise(resolve => setTimeout(resolve, 5000));
+                    }
+                }
+                if (client.isOpen) {
+                    yield client.quit();
+                }
+            });
+            const close = () => __awaiter(this, void 0, void 0, function* () {
+                console.log('Stopping Redis trigger and closing connection.');
+                keepRunning = false;
+                if (client.isOpen) {
+                    yield client.disconnect();
+                }
+            });
+            manualTrigger();
+            return {
+                closeFunction: close,
+            };
         });
     }
 }
 exports.RedisStreamsTrigger = RedisStreamsTrigger;
-class RedisConnectionHelper {
-    constructor(mode, host, port, db, streamName, groupName, consumerName, password, batchSize) {
-        this.block = 30 * 1000; // ms to wait to read events from the stream
-        this.host = host;
-        this.port = port;
-        this.db = db;
-        if (this.password) {
-            this.password = password;
-        }
-        this.streamName = streamName;
-        this.groupName = groupName;
-        this.consumerName = consumerName;
-        this.client = (0, redis_1.createClient)({
-            socket: {
-                host: this.host,
-                port: this.port,
-            },
-            password: this.password,
-            database: this.db,
-        });
-        this.client.on('error', (err) => console.log('Redis Client Error', err));
-        this.mode = mode;
-        this.connected = false;
-        this.batchSize = batchSize;
-    }
-    ;
-    listenForEvents(handler) {
-        return __awaiter(this, void 0, void 0, function* () {
-            yield this.ensureConnection();
-            yield this.createConsumerGroup();
-            const readStream = () => __awaiter(this, void 0, void 0, function* () {
-                const groupOptions = {
-                    BLOCK: this.block,
-                    COUNT: this.batchSize ? this.batchSize : undefined
-                };
-                while (this.client.isOpen) {
-                    console.log('Awaiting message');
-                    const messages = yield this.client.xReadGroup(this.groupName, this.consumerName, { key: this.streamName, id: '>' }, groupOptions);
-                    console.log('After message');
-                    if (messages) {
-                        const messageBodies = messages.map(streamMsg => streamMsg.messages).flat().map(m => m.message);
-                        handler(messageBodies);
-                    }
-                    else {
-                        console.log('Messages read from redis stream were null');
-                    }
-                    if (this.mode === 'manual') {
-                        yield this.closeClient();
-                    }
-                }
-            });
-            console.log('Awaiting read stream');
-            yield readStream();
-            console.log('After read stream');
-            // this.client.quit();
-        });
-    }
-    createConsumerGroup() {
-        return __awaiter(this, void 0, void 0, function* () {
-            yield this.ensureConnection();
-            try {
-                yield this.client.xGroupCreate(this.streamName, this.groupName, '0');
-            }
-            catch (error) {
-                let msg = error.message;
-                if (msg.includes('BUSYGROUP')) {
-                    console.log(`The consumer group ${this.groupName} already exists so it couldn't be created.`);
-                }
-                else {
-                    throw error;
-                }
-            }
-        });
-    }
-    ensureConnection() {
-        return __awaiter(this, void 0, void 0, function* () {
-            if (!this.connected) {
-                yield this.client.connect();
-                this.connected = true;
-            }
-        });
-    }
-    pushEvent(event) {
-        return __awaiter(this, void 0, void 0, function* () {
-            yield this.ensureConnection();
-            yield this.client.xAdd(this.streamName, '*', event);
-        });
-    }
-    closeClient() {
-        if (this.client.isOpen) {
-            console.log('Closing client');
-            return this.client.quit();
-        }
-    }
-}
-exports.RedisConnectionHelper = RedisConnectionHelper;
 //# sourceMappingURL=RedisStreamsTrigger.node.js.map

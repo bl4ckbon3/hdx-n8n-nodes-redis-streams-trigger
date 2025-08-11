@@ -1,7 +1,0 @@
-{
-    "jest.nodeEnv": {
-        "REDIS_HOST": "gisredis"
-    },
-    "jest.jestCommandLine": "./node_modules/.bin/jest",
-    "jest.autoRun": "off",
-}

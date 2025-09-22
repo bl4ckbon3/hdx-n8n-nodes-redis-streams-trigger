@@ -29,7 +29,8 @@
             "dist/credentials/RedisCredentials.credentials.js"
         ],
         "nodes": [
-            "dist/nodes/RedisStreamsTrigger/RedisStreamsTrigger.node.js"
+            "dist/nodes/RedisStreamsTrigger/RedisStreamsTrigger.node.js",
+            "dist/nodes/RedisStreamsTrigger/RedisStreams.node.js"
         ]
     },
     "devDependencies": {
